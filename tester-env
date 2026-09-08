@@ -56,7 +56,7 @@ ensure_env() {
 
 ensure_superuser() {
     if compose exec -T web ./manage.py shell -c \
-        "from hc.accounts.models import Member; print(Member.objects.filter(user__email='${ADMIN_EMAIL}').exists())" 2>/dev/null | grep -q True; then
+        "from django.contrib.auth.models import User; print(User.objects.filter(email='${ADMIN_EMAIL}').exists())" 2>/dev/null | grep -q True; then
         echo "==> Superuser ${ADMIN_EMAIL} already exists, skipping."
     else
         echo "==> Creating superuser ${ADMIN_EMAIL}..."
