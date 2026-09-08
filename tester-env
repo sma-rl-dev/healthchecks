@@ -1,0 +1,184 @@
+#!/usr/bin/env bash
+# Healthchecks - Tester Environment CLI.
+# Usage: ./tester-env <command> [--run-id <id>] [--port <port>]
+# Commands: deploy, verify, reset, stop, logs, status
+set -euo pipefail
+
+RUN_ID="default"
+PORT="8234"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BASE_FILE="${SCRIPT_DIR}/docker/docker-compose.yml"
+OVERLAY_FILE="${SCRIPT_DIR}/docker-compose.tester-env.yml"
+ENV_FILE="${SCRIPT_DIR}/docker/.env"
+ADMIN_EMAIL="admin@example.org"
+ADMIN_PASSWORD="tester-env-admin-pw"
+
+project_name() {
+    if [[ "${RUN_ID}" == "default" ]]; then
+        echo "healthchecks-prospect"
+    else
+        echo "healthchecks-${RUN_ID}"
+    fi
+}
+
+compose() {
+    # IMAGE_TAG is honoured by the overlay (content-addressed tag from
+    # scripts/rl-env; manual runs get tester-env-healthchecks:dev).
+    # RUN_ID scopes only containers/volumes via --project-name, never images.
+    docker compose -f "${BASE_FILE}" -f "${OVERLAY_FILE}" --project-name "$(project_name)" "$@"
+}
+
+wait_healthy() {
+    echo "==> Waiting for web to respond (up to ~4 min)..."
+    for _ in $(seq 1 24); do
+        local code
+        code=$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:${PORT}/accounts/login/" 2>/dev/null || echo fail)
+        if [[ "${code}" == "200" ]]; then
+            echo "==> Web is up: http://localhost:${PORT}/accounts/login/ -> 200"
+            return 0
+        fi
+        sleep 10
+    done
+    echo "ERROR: web did not respond on port ${PORT}" >&2
+    return 1
+}
+
+ensure_env() {
+    if [[ ! -f "${ENV_FILE}" ]]; then
+        echo "==> Creating deterministic docker/.env from .env.example"
+        sed -e 's/^DB_PASSWORD=.*/DB_PASSWORD=tester-env-pg16-pw/' \
+            -e 's/^SECRET_KEY=.*/SECRET_KEY=tester-env-fixed-secret-key-0123456789abcdef/' \
+            -e "s|^SITE_ROOT=.*|SITE_ROOT=http://localhost:${PORT}|" \
+            -e 's/^ALLOWED_HOSTS=.*/ALLOWED_HOSTS=localhost,127.0.0.1,host.docker.internal/' \
+            "${SCRIPT_DIR}/docker/.env.example" > "${ENV_FILE}"
+    fi
+}
+
+ensure_superuser() {
+    if compose exec -T web ./manage.py shell -c \
+        "from hc.accounts.models import Member; print(Member.objects.filter(user__email='${ADMIN_EMAIL}').exists())" 2>/dev/null | grep -q True; then
+        echo "==> Superuser ${ADMIN_EMAIL} already exists, skipping."
+    else
+        echo "==> Creating superuser ${ADMIN_EMAIL}..."
+        compose exec -T web ./manage.py createsuperuser \
+            --email "${ADMIN_EMAIL}" --password "${ADMIN_PASSWORD}"
+    fi
+}
+
+cmd_deploy() {
+    ensure_env
+    echo "==> Building web image from editable source..."
+    compose build web
+    echo "==> Starting db + web..."
+    compose up -d
+    wait_healthy
+    ensure_superuser
+    echo "==> Deployment complete. App running at http://localhost:${PORT}"
+    echo "==> Login: ${ADMIN_EMAIL} (password stored in docker/.env-adjacent prospect files only)"
+}
+
+cmd_seed() {
+    echo "==> Seeding deterministic check baseline..."
+    compose exec -T web ./manage.py shell < "${SCRIPT_DIR}/docker/seed/seed_checks.py"
+}
+
+cmd_verify() {
+    local code code_hdi
+    code=$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:${PORT}/accounts/login/" || echo fail)
+    if [[ "${code}" == "200" ]]; then
+        echo "==> VERIFY PASS: login page http://localhost:${PORT}/accounts/login/ -> 200"
+    else
+        echo "==> VERIFY FAIL: login page -> ${code}" >&2
+        return 1
+    fi
+    # Browser MCP containers reach the app via host.docker.internal; the
+    # Django Host header differs, so ALLOWED_HOSTS must cover it too.
+    code_hdi=$(curl -s -o /dev/null -w '%{http_code}' -H "Host: host.docker.internal:${PORT}" "http://localhost:${PORT}/accounts/login/" || echo fail)
+    if [[ "${code_hdi}" == "200" ]]; then
+        echo "==> VERIFY PASS: host.docker.internal login page -> 200"
+    else
+        echo "==> VERIFY FAIL: host.docker.internal login page -> ${code_hdi}" >&2
+        return 1
+    fi
+}
+
+cmd_reset() {
+    echo "==> Resetting: stopping containers and removing volumes..."
+    compose down -v
+    echo "==> Reset complete. Run './tester-env deploy' to start fresh."
+}
+
+cmd_stop() {
+    echo "==> Stopping containers (preserving volumes)..."
+    compose stop || true
+}
+
+cmd_logs() {
+    compose logs -f web 2>/dev/null || echo "Container not running."
+}
+
+cmd_status() {
+    if docker ps --filter "name=$(project_name)-web" --format "{{.Names}}" | grep -q .; then
+        echo "Status: RUNNING"
+        echo "URL: http://localhost:${PORT}"
+    else
+        echo "Status: NOT RUNNING"
+    fi
+}
+
+cmd_help() {
+    cat <<EOF
+Healthchecks - Tester Environment CLI
+
+Usage: ./tester-env <command> [--run-id <id>] [--port <port>]
+
+Commands:
+  deploy    Build from source, start db+web, create deterministic superuser
+  seed      Create deterministic check baseline (idempotent) + assert state
+  verify    Assert login page returns HTTP 200
+  reset     compose down -v (removes containers AND db-data volume)
+  stop      Stop containers (preserves data)
+  logs      Tail web container logs
+  status    Show running status and URL
+  help      Show this help message
+
+Options:
+  --run-id <id>   Isolate compose project (containers/volumes). Default: default
+  --port <port>   Host port for web. Default: 8234 (SITE_ROOT in docker/.env
+                  is pinned to 8234; changing --port also needs SITE_ROOT edit)
+
+Credentials: admin@example.org / (see tester-env script ADMIN_PASSWORD;
+  real secret stored only in prospect files, never in status records)
+
+  Typical workflow:
+  ./tester-env deploy
+  ./tester-env seed
+  ./tester-env verify
+  ./tester-env reset
+EOF
+}
+
+main() {
+    local cmd="${1:-help}"
+    shift || true
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --run-id) RUN_ID="${2:?--run-id requires a value}"; shift 2 ;;
+            --port) PORT="${2:?--port requires a value}"; shift 2 ;;
+            --help|-h) cmd_help; exit 0 ;;
+            *) echo "Unknown option: $1"; cmd_help; exit 1 ;;
+        esac
+    done
+    case "${cmd}" in
+        deploy) cmd_deploy ;;
+        seed) cmd_seed ;;
+        verify) cmd_verify ;;
+        reset) cmd_reset ;;
+        stop) cmd_stop ;;
+        logs) cmd_logs ;;
+        status) cmd_status ;;
+        help|--help|-h) cmd_help ;;
+    esac
+}
+
+main "$@"
