@@ -11,11 +11,21 @@ Run inside the web container:
     ./manage.py shell < docker/seed/seed_checks.py
 """
 
+from datetime import timedelta
+import json
+
 from django.contrib.auth.models import User
 from hc.accounts.models import Project
-from hc.api.models import Check
+from hc.api.models import Channel, Check
 
 ADMIN_EMAIL = "admin@example.org"
+
+# Deterministic Ntfy integration: name is the idempotency key.
+NTFY_NAME = "Ops Ntfy Feed"
+NTFY_TOPIC = "tester-env-ops-alerts"
+NTFY_URL = "https://ntfy.sh"
+NTFY_PRIORITY = 4  # High priority for "down" events
+NTFY_PRIORITY_UP = 1  # Min priority for "up" events
 
 # (name, kind, timeout_days, grace_hours, schedule, tz, tags, desc,
 #  n_success_pings, final_status)
@@ -80,8 +90,10 @@ names = [spec[0] for spec in SEED_CHECKS]
 # Clear the whole project (including ad-hoc browser-smoke checks) so the
 # dashboard shows exactly the deterministic baseline after every reset+seed.
 Check.objects.filter(project=project).delete()
-
-from datetime import timedelta
+# Channels are separate rows (not cascaded by check deletion); clear all ntfy
+# channels so exactly one deterministic seed integration exists (the email
+# channel is a product default and is left alone).
+Channel.objects.filter(project=project, kind="ntfy").delete()
 
 for name, kind, timeout_days, grace_hours, schedule, tz, tags, desc, n_pings, status in SEED_CHECKS:
     check = Check.objects.create(
@@ -110,6 +122,24 @@ for name, kind, timeout_days, grace_hours, schedule, tz, tags, desc, n_pings, st
         check.alert_after = None
         check.save()
 
+ntfy = Channel.objects.create(
+    project=project,
+    kind="ntfy",
+    name=NTFY_NAME,
+    value=json.dumps(
+        {
+            "topic": NTFY_TOPIC,
+            "url": NTFY_URL,
+            "priority": NTFY_PRIORITY,
+            "priority_up": NTFY_PRIORITY_UP,
+            "token": "",
+        },
+        sort_keys=True,
+    ),
+)
+# Wire the integration to all seed checks, like the add form does.
+ntfy.assign_all_checks()
+
 # ---- assertions (fail loudly if the visible baseline is wrong) ----
 rows = list(Check.objects.filter(project=project, name__in=names))
 assert len(rows) == 4, f"expected 4 seed checks, got {len(rows)}"
@@ -121,6 +151,14 @@ for name, _kind, _td, _gh, _sched, _tz, _tags, _desc, n_pings, status in SEED_CH
     assert c.n_pings == n_pings, f"{name}: n_pings={c.n_pings}, want {n_pings}"
     assert c.status == status, f"{name}: status={c.status!r}, want {status!r}"
 total_pings = sum(c.n_pings for c in rows)
+ntfy.refresh_from_db()
+assert ntfy.is_editable(), "seed ntfy channel must be editable"
+assert ntfy.ntfy.topic == NTFY_TOPIC, f"ntfy topic={ntfy.ntfy.topic!r}, want {NTFY_TOPIC!r}"
+assert ntfy.ntfy.url == NTFY_URL, f"ntfy url={ntfy.ntfy.url!r}, want {NTFY_URL!r}"
+assert ntfy.ntfy.priority == NTFY_PRIORITY, f"ntfy priority={ntfy.ntfy.priority}, want {NTFY_PRIORITY}"
+assert ntfy.ntfy.priority_up == NTFY_PRIORITY_UP, f"ntfy priority_up={ntfy.ntfy.priority_up}, want {NTFY_PRIORITY_UP}"
 print(f"SEED PASS: 4 checks ({total_pings} pings): " + ", ".join(
     f"{n} [{by_name[n].get_status()}, n_pings={by_name[n].n_pings}]" for n in names
 ))
+print(f"SEED PASS: ntfy {NTFY_NAME!r} (topic={NTFY_TOPIC}, url={NTFY_URL}, "
+      f"priority={NTFY_PRIORITY}, priority_up={NTFY_PRIORITY_UP})")
