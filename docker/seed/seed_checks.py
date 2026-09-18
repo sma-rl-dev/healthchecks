@@ -107,6 +107,14 @@ for name, kind, timeout_days, grace_hours, schedule, tz, tags, desc, n_pings, st
         tags=tags,
         desc=desc,
     )
+    if name == "Staging Deploy Hook":
+        # Clone-scenario seed: content filtering with HTTP request body
+        # selected and unmatched pings classified as failure. Set before
+        # pings so the flags persist; Check.ping() takes an explicit action
+        # and does not reclassify, so status/n_pings are unaffected.
+        check.filter_http_body = True
+        check.filter_default_fail = True
+        check.save()
     for _ in range(n_pings):
         check.ping(
             remote_addr="127.0.0.1",
@@ -151,6 +159,13 @@ for name, _kind, _td, _gh, _sched, _tz, _tags, _desc, n_pings, status in SEED_CH
     assert c.n_pings == n_pings, f"{name}: n_pings={c.n_pings}, want {n_pings}"
     assert c.status == status, f"{name}: status={c.status!r}, want {status!r}"
 total_pings = sum(c.n_pings for c in rows)
+staging = by_name["Staging Deploy Hook"]
+assert staging.filter_http_body is True, "Staging Deploy Hook: filter_http_body must be True"
+assert staging.filter_default_fail is True, "Staging Deploy Hook: filter_default_fail must be True"
+for other in ("Nightly Database Backup", "Weekly Sales Report", "Legacy Billing Import"):
+    o = by_name[other]
+    assert o.filter_http_body is False, f"{other}: filter_http_body={o.filter_http_body!r}, want False"
+    assert o.filter_default_fail is False, f"{other}: filter_default_fail={o.filter_default_fail!r}, want False"
 ntfy.refresh_from_db()
 assert ntfy.is_editable(), "seed ntfy channel must be editable"
 assert ntfy.ntfy.topic == NTFY_TOPIC, f"ntfy topic={ntfy.ntfy.topic!r}, want {NTFY_TOPIC!r}"
@@ -162,3 +177,5 @@ print(f"SEED PASS: 4 checks ({total_pings} pings): " + ", ".join(
 ))
 print(f"SEED PASS: ntfy {NTFY_NAME!r} (topic={NTFY_TOPIC}, url={NTFY_URL}, "
       f"priority={NTFY_PRIORITY}, priority_up={NTFY_PRIORITY_UP})")
+print("SEED PASS: filtering Staging Deploy Hook "
+      "(filter_http_body=True, filter_default_fail=True)")
