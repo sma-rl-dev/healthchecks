@@ -24,7 +24,9 @@ tooling on branch `tester-env-baseline`.
 | `status` | RUNNING + URL, or NOT RUNNING |
 
 Options: `--run-id <id>` isolates the compose project (containers/volumes);
-`--port <port>` overrides the host port (default `8234`).
+`--port <port>` sets the published host port (default `8234`) and refreshes
+`SITE_ROOT` to match on every deploy. Parallel runs on distinct `--port`
+values bind disjoint host ports.
 
 Image policy: the `docker-compose.tester-env.yml` overlay pins the web image
 to `${IMAGE_TAG:-tester-env-healthchecks:dev}` (honoured from `scripts/rl-env`
@@ -34,7 +36,8 @@ content-addressed tags). `RUN_ID` never scopes the image name.
 
 - `docker/Dockerfile` (python:3.14-slim, wheels stage) + `docker/docker-compose.yml`
   (postgres:16 + uwsgi `:8000`, migrations auto-run via uwsgi `hook-pre-app`).
-- Overlay adds `8234:8000` (upstream `8000:8000` binding coexists).
+- Overlay replaces the upstream `8000:8000` binding via `!override` with
+  `${HOST_PORT:-8234}:8000`, parameterized by `tester-env --port`.
 - `docker/.env` is git-ignored; `ensure_env` derives it deterministically from
   `docker/.env.example`: `DB_PASSWORD`/`SECRET_KEY` fixed placeholders,
   `SITE_ROOT=http://localhost:8234`,

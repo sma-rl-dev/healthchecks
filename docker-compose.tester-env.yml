@@ -1,12 +1,13 @@
 # Tester-env overlay for Healthchecks (lives at the fork root, next to tester-env).
-# - Adds high-port mapping (upstream docker/docker-compose.yml publishes
-#   8000:8000; compose merges port lists so both bindings coexist; the
-#   canonical tester-env URL is :8234).
+# - Replaces the upstream docker/docker-compose.yml port binding via !override
+#   so the published host port is parameterized per run (HOST_PORT, derived
+#   from tester-env --port). Concurrent runs then bind disjoint host ports;
+#   the upstream fixed 8000:8000 binding is dropped, not merged.
 # - Pins the built web image to the content-addressed IMAGE_TAG policy
 #   (${IMAGE_TAG:-tester-env-healthchecks:dev}); RUN_ID scopes only
 #   containers/volumes via --project-name, never the image name.
 services:
   web:
     image: "${IMAGE_TAG:-tester-env-healthchecks:dev}"
-    ports:
-      - "8234:8000"
+    ports: !override
+      - "${HOST_PORT:-8234}:8000"

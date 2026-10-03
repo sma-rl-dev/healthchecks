@@ -25,7 +25,9 @@ compose() {
     # IMAGE_TAG is honoured by the overlay (content-addressed tag from
     # scripts/rl-env; manual runs get tester-env-healthchecks:dev).
     # RUN_ID scopes only containers/volumes via --project-name, never images.
-    docker compose -f "${BASE_FILE}" -f "${OVERLAY_FILE}" --project-name "$(project_name)" "$@"
+    # HOST_PORT is forwarded to the overlay's !override port binding so each
+    # run publishes its own --port instead of a fixed host port.
+    HOST_PORT="${PORT}" docker compose -f "${BASE_FILE}" -f "${OVERLAY_FILE}" --project-name "$(project_name)" "$@"
 }
 
 wait_healthy() {
@@ -51,6 +53,13 @@ ensure_env() {
             -e "s|^SITE_ROOT=.*|SITE_ROOT=http://localhost:${PORT}|" \
             -e 's/^ALLOWED_HOSTS=.*/ALLOWED_HOSTS=localhost,127.0.0.1,host.docker.internal/' \
             "${SCRIPT_DIR}/docker/.env.example" > "${ENV_FILE}"
+    fi
+    # SITE_ROOT must always match the active --port so absolute URLs stay
+    # correct when the same worktree is deployed on a different host port.
+    if grep -q '^SITE_ROOT=' "${ENV_FILE}"; then
+        sed -i "s|^SITE_ROOT=.*|SITE_ROOT=http://localhost:${PORT}|" "${ENV_FILE}"
+    else
+        printf 'SITE_ROOT=http://localhost:%s\n' "${PORT}" >> "${ENV_FILE}"
     fi
 }
 
@@ -144,8 +153,9 @@ Commands:
 
 Options:
   --run-id <id>   Isolate compose project (containers/volumes). Default: default
-  --port <port>   Host port for web. Default: 8234 (SITE_ROOT in docker/.env
-                  is pinned to 8234; changing --port also needs SITE_ROOT edit)
+  --port <port>   Host port for web. Default: 8234. Sets the published host
+                  port (via the overlay HOST_PORT) and refreshes SITE_ROOT in
+                  docker/.env to match on every deploy.
 
 Credentials: admin@example.org / (see tester-env script ADMIN_PASSWORD;
   real secret stored only in prospect files, never in status records)
