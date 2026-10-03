@@ -51,7 +51,7 @@ ensure_env() {
         sed -e 's/^DB_PASSWORD=.*/DB_PASSWORD=tester-env-pg16-pw/' \
             -e 's/^SECRET_KEY=.*/SECRET_KEY=tester-env-fixed-secret-key-0123456789abcdef/' \
             -e "s|^SITE_ROOT=.*|SITE_ROOT=http://localhost:${PORT}|" \
-            -e 's/^ALLOWED_HOSTS=.*/ALLOWED_HOSTS=localhost,127.0.0.1,host.docker.internal/' \
+            -e 's/^ALLOWED_HOSTS=.*/ALLOWED_HOSTS=localhost,127.0.0.1,host.docker.internal,172.17.0.1/' \
             "${SCRIPT_DIR}/docker/.env.example" > "${ENV_FILE}"
     fi
     # SITE_ROOT must always match the active --port so absolute URLs stay
