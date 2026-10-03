@@ -40,10 +40,12 @@ content-addressed tags). `RUN_ID` never scopes the image name.
   `${HOST_PORT:-8234}:8000`, parameterized by `tester-env --port`.
 - `docker/.env` is git-ignored; `ensure_env` derives it deterministically from
   `docker/.env.example`: `DB_PASSWORD`/`SECRET_KEY` fixed placeholders,
-  `SITE_ROOT=http://localhost:8234`,
-  `ALLOWED_HOSTS=localhost,127.0.0.1,host.docker.internal` (the
-  `host.docker.internal` entry is required: browser MCP containers reach the
-  app under that Host header and Django would 400 otherwise).
+  `SITE_ROOT=http://172.17.0.1:8234`,
+  `ALLOWED_HOSTS=localhost,127.0.0.1,host.docker.internal,172.17.0.1` (the
+  `host.docker.internal` and `172.17.0.1` entries are required: browser MCP
+  containers reach the app under those Host headers and Django would 400
+  otherwise). `SITE_ROOT` uses the Docker bridge address so generated public
+  badge/absolute URLs are fetchable from inside a browser container.
 
 ## Local URL
 
